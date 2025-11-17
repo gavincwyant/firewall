@@ -1,7 +1,8 @@
 #include <stdint.h>
 #include <time.h>
 
-#define STARTING_TOKENS 1
+#define STARTING_TOKENS 10
+#define MAX_TOKENS 10
 #define TABLE_SIZE 1024
 
 typedef struct bucket{

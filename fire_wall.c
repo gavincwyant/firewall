@@ -43,7 +43,7 @@ static int handle_packet(struct nfq_q_handle *q_handle, struct nfgenmsg *nf_meta
         int tcp_payload_len = ntohs(ip_hdr->ip_len) - (ip_hdr->ip_hl * 4) - (tcp_hdr->th_off * 4);
         printf("payload:\n");
         print_strings(tcp_payload, tcp_payload_len, 5);
-        printf("\n\n");
+        //printf("\n\n");
     }
     //UDP
     else if (ip_hdr->ip_p == IPPROTO_UDP) {
@@ -54,21 +54,37 @@ static int handle_packet(struct nfq_q_handle *q_handle, struct nfgenmsg *nf_meta
         int udp_payload_len = ntohs(ip_hdr->ip_len) - (ip_hdr->ip_hl * 4) - sizeof(struct udphdr);
         printf("payload:\n");
         print_strings(udp_payload, udp_payload_len, 5);
-        printf("\n\n");
+        //printf("\n\n");
     }
     int verdict = NF_ACCEPT;
 	bucket *buc = lookup(table, source_addr);
+	//if ip does not have a bucket, make one!
 	if (!buc){
-		bucket_get_or_create(table, source_addr);
-	} else{
-		int tok = buc->tokens; // + current_time - last_refill
-		if (tok <= 0) {
-			verdict = NF_DROP;
-			printf("DROPPING THIS PACKET - NO TOKENS FOR IP\n\n\n");
+		buc = bucket_get_or_create(table, source_addr);
+		printf("NEW IP\n");
+	}else{printf("we've seen this one already\n");}
+
+	int now = time(NULL);
+	//seconds since refill
+	int ssr = now - buc->last_refill;
+	if (ssr > 0){ //MUST WAIT AT LEAST ONE SECOND BEFORE TOKEN REFILL
+		if (buc->tokens + ssr > MAX_TOKENS){ //AT MOST, MAX TOKENS
+			buc->tokens = MAX_TOKENS;
+		}else{
+			buc->tokens += ssr;
 		}
-		buc->tokens = tok - 1;
+		buc->last_refill = now;
+	}
+	printf("seconds since refill: %d\n", ssr);
+	printf("bucket has %d tokens\n", buc->tokens);
+	if (buc->tokens <= 0) {
+		verdict = NF_DROP;
+		printf("DROPPING THIS PACKET - NO TOKENS FOR IP\n\n\n");
+	} else{
+		buc->tokens--;
 	}
 
+	printf("\n\n");
     // for now, accept all packets
     return nfq_set_verdict(q_handle, id, verdict, 0, NULL);
 }
