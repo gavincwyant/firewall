@@ -11,8 +11,18 @@
 #include "fire_wall.h"
 #include "bucket.h"
 
+#define LOG(format, ...) \
+    do { if (verbose) fprintf(stdout, format, ##__VA_ARGS__); } while (0)
+
 static int running = 1;
 static ip_table *table;
+int total_packets = 0;
+int dropped_packets = 0;
+int number_of_ips = 0;
+
+static int verbose = 0;
+
+static bucket *global_bucket;
 
 static int handle_packet(struct nfq_q_handle *q_handle, struct nfgenmsg *nf_meta,
                          struct nfq_data *nf_data, void *data) {
@@ -38,34 +48,39 @@ static int handle_packet(struct nfq_q_handle *q_handle, struct nfgenmsg *nf_meta
         //try looking only for dns!
         struct tcphdr *tcp_hdr = (struct tcphdr *)(payload + ip_hdr->ip_hl*4);
         //if (ntohs(tcp_hdr->th_dport) != 53 && ntohs(tcp_hdr->th_sport) != 53){continue;}
-        printf("TCP\t%s:%d → %s:%d\n",src, ntohs(tcp_hdr->th_sport), dst, ntohs(tcp_hdr->th_dport));
+        LOG("TCP\t%s:%d → %s:%d\n",src, ntohs(tcp_hdr->th_sport), dst, ntohs(tcp_hdr->th_dport));
         unsigned char *tcp_payload = (unsigned char *)tcp_hdr + (4*tcp_hdr->th_off);
         int tcp_payload_len = ntohs(ip_hdr->ip_len) - (ip_hdr->ip_hl * 4) - (tcp_hdr->th_off * 4);
-        printf("payload:\n");
-        print_strings(tcp_payload, tcp_payload_len, 5);
-        //printf("\n\n");
+        LOG("payload:\n");
+        if (verbose){
+        	print_strings(tcp_payload, tcp_payload_len, 5);
+        }
+        LOG("\n\n");
     }
     //UDP
     else if (ip_hdr->ip_p == IPPROTO_UDP) {
         struct udphdr *udp_hdr = (struct udphdr *)(payload + ip_hdr->ip_hl*4);
         //if (ntohs(udp_hdr->uh_dport) != 53 && ntohs(udp_hdr->uh_sport) != 53){continue;}
-        printf("UDP\t%s:%d → %s:%d\n", src, ntohs(udp_hdr->uh_sport), dst, ntohs(udp_hdr->uh_dport));
+        LOG("UDP\t%s:%d → %s:%d\n", src, ntohs(udp_hdr->uh_sport), dst, ntohs(udp_hdr->uh_dport));
         unsigned char *udp_payload = (unsigned char *)udp_hdr + sizeof(struct udphdr);
         int udp_payload_len = ntohs(ip_hdr->ip_len) - (ip_hdr->ip_hl * 4) - sizeof(struct udphdr);
-        printf("payload:\n");
-        print_strings(udp_payload, udp_payload_len, 5);
-        //printf("\n\n");
+        LOG("payload:\n");
+        if (verbose){
+        	print_strings(udp_payload, udp_payload_len, 5);
+        }
+        LOG("\n\n");
     }
     int verdict = NF_ACCEPT;
 	bucket *buc = lookup(table, source_addr);
 	//if ip does not have a bucket, make one!
 	if (!buc){
 		buc = bucket_get_or_create(table, source_addr);
-		printf("NEW IP\n");
-	}else{printf("we've seen this one already\n");}
+		number_of_ips++;
+		LOG("NEW IP\n");
+	}else{/*printf("we've seen this one already\n");*/}
 
 	int now = time(NULL);
-	//seconds since refill
+	//seconds since refill (per ip bucket)
 	int ssr = now - buc->last_refill;
 	if (ssr > 0){ //MUST WAIT AT LEAST ONE SECOND BEFORE TOKEN REFILL
 		if (buc->tokens + ssr > MAX_TOKENS){ //AT MOST, MAX TOKENS
@@ -75,17 +90,30 @@ static int handle_packet(struct nfq_q_handle *q_handle, struct nfgenmsg *nf_meta
 		}
 		buc->last_refill = now;
 	}
-	printf("seconds since refill: %d\n", ssr);
-	printf("bucket has %d tokens\n", buc->tokens);
-	if (buc->tokens <= 0) {
-		verdict = NF_DROP;
-		printf("DROPPING THIS PACKET - NO TOKENS FOR IP\n\n\n");
-	} else{
-		buc->tokens--;
-	}
 
-	printf("\n\n");
-    // for now, accept all packets
+	//update global bucket
+	now = time(NULL);
+	ssr = now - global_bucket->last_refill;
+	if (ssr > 0){
+		if (global_bucket->tokens + ssr > GLOBAL_TOKENS){
+			global_bucket->tokens = GLOBAL_TOKENS;
+		} else {
+			global_bucket->tokens += ssr;
+		}
+		global_bucket->last_refill = now;
+	}
+	//printf("seconds since refill: %d\n", ssr);
+	//printf("bucket has %d tokens\n", buc->tokens);
+	if (buc->tokens <= 0 || global_bucket->tokens <= 0) {
+		verdict = NF_DROP;
+		LOG("DROPPING THIS PACKET - NO TOKENS FOR IP\n\n\n");
+		dropped_packets++;
+	} else{
+		LOG("\n\n");
+		buc->tokens--;
+		global_bucket->tokens--;
+	}
+	total_packets++;
     return nfq_set_verdict(q_handle, id, verdict, 0, NULL);
 }
 
@@ -93,13 +121,24 @@ void handle_sigint(int sig) {
     running = 0;
 }
 
-int main() {
+
+int main(int argc, char **argv) {
     struct nfq_handle *handle;       // handle for library (create queue)
     struct nfq_q_handle *queue_handle; // handle for our specific queue
     struct nfq_nfnl_handle *socket_handler;
     int fd;
     int bytes_received;
-    char buf[4096];
+    char buf[4096 * 128];
+
+    for (int i = 1; i < argc; i++) {
+	    if (strncmp(argv[i], "-verbose", 8) == 0 || strncmp(argv[i], "-v", 2) == 0) {
+    	    verbose = 1;
+   		}
+    }
+
+    if (verbose){
+        printf("\n ~ Verbose mode enabled ~ \n\n");
+	}
 
     printf("Opening library handle\n");
     handle = nfq_open();
@@ -138,15 +177,21 @@ int main() {
 
     //create ip table
     table = create_table(TABLE_SIZE);
+    //create global bucket
+    global_bucket = (bucket *)malloc(sizeof(bucket));
+    global_bucket->tokens = GLOBAL_TOKENS;
+    global_bucket->last_refill = time(NULL);
 
     printf("Listening for packets...\n");
     while (running && (bytes_received = recv(fd, buf, sizeof(buf), 0)) >= 0) {
         nfq_handle_packet(handle, buf, bytes_received);
     }
 
-    printf("Cleaning up...\n");
+    printf("Cleaning up...\n\n");
     nfq_destroy_queue(queue_handle);
     nfq_close(handle);
+
+    print_statistics();
 
     return 0;
 }

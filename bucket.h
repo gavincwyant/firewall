@@ -4,6 +4,7 @@
 #define STARTING_TOKENS 10
 #define MAX_TOKENS 10
 #define TABLE_SIZE 1024
+#define GLOBAL_TOKENS 10000
 
 typedef struct bucket{
 	uint32_t ip;

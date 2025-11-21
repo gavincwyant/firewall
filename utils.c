@@ -1,6 +1,10 @@
 #include <stdio.h>
 #include <stddef.h>
 
+extern int total_packets;
+extern int dropped_packets;
+extern int number_of_ips;
+
 void print_strings(const unsigned char *data, size_t len, int min_len) {
     int count = 0;
     size_t start = 0;
@@ -24,4 +28,14 @@ void print_strings(const unsigned char *data, size_t len, int min_len) {
             putchar(data[j]);
         putchar('\n');
     }
+}
+
+void print_statistics(){
+	printf("%-20s %-20s %-20s %-20s\n",
+	       "NUMBER OF IPS",
+	       "TOTAL PACKETS",
+	       "DROPPED PACKETS",
+	       "DROP RATIO (%)");
+	       
+	printf("%-20d %-20d %-20d %-20.2f\n", number_of_ips, total_packets, dropped_packets, 100* ((double)dropped_packets / (double)total_packets));
 }
