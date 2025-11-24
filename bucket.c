@@ -50,6 +50,7 @@ bucket *bucket_get_or_create(ip_table* table, uint32_t ip){
 	new_bucket->ip = ip;
 	new_bucket->tokens = STARTING_TOKENS;
 	new_bucket->last_refill = time(NULL);
+	new_bucket->uses = 1;
 
 	//insert to head of list
 	new_bucket->next = table->buckets[index];

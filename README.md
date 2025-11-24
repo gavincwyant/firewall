@@ -11,6 +11,11 @@ There is a global bucket, for the purpose of putting a cap on the total traffic 
 limiting the traffic of any one IP. Finally there is another hashmap that aims to keep track of legitimate users of the system. These users will be unimpeded by the rate limiting of 
 our other buckets during an attack. 
 
+### Dependencies
+```text
+	sudo apt install libnetfilter-queue-dev libnflink-dev iptables
+```
+
 #### ASCII Diagram
 ```text
                   Incoming Traffic

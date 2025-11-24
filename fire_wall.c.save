@@ -11,16 +11,15 @@
 #include "fire_wall.h"
 #include "bucket.h"
 
+//this is my solution to optional logging \(^_^)/
 #define LOG(format, ...) \
     do { if (verbose) fprintf(stdout, format, ##__VA_ARGS__); } while (0)
 
 static int running = 1;
 static ip_table *table;
-static ip_table *legit_table;
 int total_packets = 0;
 int dropped_packets = 0;
 int number_of_ips = 0;
-int legit_ips = 0;
 
 static int verbose = 0;
 
@@ -72,39 +71,15 @@ static int handle_packet(struct nfq_q_handle *q_handle, struct nfgenmsg *nf_meta
         }
         LOG("\n\n");
     }
-	total_packets++;
     int verdict = NF_ACCEPT;
-
-	//if src ip is legit, "skip the line"
-	bucket *legit_bucket = lookup(legit_table, source_addr);
-	if (legit_bucket && legit_bucket->tokens > 0) {
-		legit_bucket->tokens--;
-    	return nfq_set_verdict(q_handle, id, verdict, 0, NULL);
-	}
-
 	bucket *buc = lookup(table, source_addr);
 	//if ip does not have a bucket, make one!
 	if (!buc){
-		//should we even waste time creating the bucket on first contact??
 		buc = bucket_get_or_create(table, source_addr);
 		number_of_ips++;
 		LOG("NEW IP\n");
+	}else{/*printf("we've seen this one already\n");*/}
 
-		//drop first packet from an IP addr
-
-		/*_______________
-			STRICT MODE*/
-		verdict = NF_DROP;
-		dropped_packets++;
-		return nfq_set_verdict(q_handle, id, verdict, 0, NULL); //TODO: THIS SHOULD BE OPTIONAL CLI FLAG (STRICT)
-	}
-	//TODO: this could use some work
-	if (buc->uses > 1) {
-		buc = bucket_get_or_create(legit_table, source_addr);
-		LOG("new legit ip addr\n");
-	}else{
-		buc->uses++;
-	}
 	int now = time(NULL);
 	//seconds since refill (per ip bucket)
 	int ssr = now - buc->last_refill;
@@ -130,7 +105,7 @@ static int handle_packet(struct nfq_q_handle *q_handle, struct nfgenmsg *nf_meta
 	}
 	//printf("seconds since refill: %d\n", ssr);
 	//printf("bucket has %d tokens\n", buc->tokens);
-	if (buc->tokens <= 0/* || global_bucket->tokens <= 0*/) {
+	if (buc->tokens <= 0 || global_bucket->tokens <= 0) {
 		verdict = NF_DROP;
 		LOG("DROPPING THIS PACKET - NO TOKENS FOR IP\n\n\n");
 		dropped_packets++;
@@ -139,6 +114,7 @@ static int handle_packet(struct nfq_q_handle *q_handle, struct nfgenmsg *nf_meta
 		buc->tokens--;
 		global_bucket->tokens--;
 	}
+	total_packets++;
     return nfq_set_verdict(q_handle, id, verdict, 0, NULL);
 }
 
@@ -185,7 +161,6 @@ int main(int argc, char **argv) {
 
     printf("Create queue\n");
     queue_handle = nfq_create_queue(handle, 0, &handle_packet, NULL);
-	//nfq_set_queue_maxlen(queue_handle, 65535); //this was to prevent floods but it seems to have no effect.
     if (!queue_handle) {
         perror("nfq_create_queue");
         exit(1);
@@ -203,10 +178,6 @@ int main(int argc, char **argv) {
 
     //create ip table
     table = create_table(TABLE_SIZE);
-
-    //table for ip addrs we know are belonging to legitimate users
-    legit_table = create_table(TABLE_SIZE);
-
     //create global bucket
     global_bucket = (bucket *)malloc(sizeof(bucket));
     global_bucket->tokens = GLOBAL_TOKENS;
